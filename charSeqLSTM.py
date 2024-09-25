@@ -161,201 +161,201 @@ class charSeqLSTM(object):
         self.datasetNumPH = tf.placeholder(tf.int32, shape=[])
         self.dayNumPH = tf.placeholder(tf.int32, shape=[])
 
-def pruneValDataset(valIter):
-        inp, targ, weight, bins = valIter.get_next()
-        return inp, targ, weight
-        
-def makeValDatasetFunc(x):
-        return lambda: pruneValDataset(allValIterators[x])
-    
-def combineSynthAndReal(synthIter, realIter):
-        if synthIter==[]:
-            inp, targ, weight, bins = realIter.get_next()
-        elif realIter==[]:
-            inp, targ, weight = synthIter.get_next()
-        else:
-            inp_r, targ_r, weight_r, bins_r = realIter.get_next()
-            inp_s, targ_s, weight_s = synthIter.get_next()
+        def pruneValDataset(valIter):
+            inp, targ, weight, bins = valIter.get_next()
+            return inp, targ, weight
             
-            inp = tf.concat([inp_s, inp_r],axis=0)
-            targ = tf.concat([targ_s, targ_r],axis=0)
-            weight = tf.concat([weight_s, weight_r],axis=0)
+        def makeValDatasetFunc(x):
+            return lambda: pruneValDataset(allValIterators[x])
         
-        return inp, targ, weight
+        def combineSynthAndReal(synthIter, realIter):
+                    if synthIter==[]:
+                        inp, targ, weight, bins = realIter.get_next()
+                    elif realIter==[]:
+                        inp, targ, weight = synthIter.get_next()
+                    else:
+                        inp_r, targ_r, weight_r, bins_r = realIter.get_next()
+                        inp_s, targ_s, weight_s = synthIter.get_next()
+                        
+                        inp = tf.concat([inp_s, inp_r],axis=0)
+                        targ = tf.concat([targ_s, targ_r],axis=0)
+                        weight = tf.concat([weight_s, weight_r],axis=0)
+                    
+                    return inp, targ, weight
+ 
+        def makeTrainDatasetFunc(x):
+            return lambda: combineSynthAndReal(allSynthIterators[x], allRealIterators[x])
     
-    def makeTrainDatasetFunc(x):
-        return lambda: combineSynthAndReal(allSynthIterators[x], allRealIterators[x])
-    
-    branchFuns = []
-    for datIdx in range(self.nDays):
-        branchFuns.extend([makeTrainDatasetFunc(datIdx), makeValDatasetFunc(datIdx)])
+        branchFuns = []
+        for datIdx in range(self.nDays):
+            branchFuns.extend([makeTrainDatasetFunc(datIdx), makeValDatasetFunc(datIdx)])
 
-    #These variables ('batchInputs', 'batchTargets', 'batchWeight') are the output of the day-selector mechanism
-    #and are all that is needed moving forward to define the LSTM cost function.
-    self.batchInputs, self.batchTargets, self.batchWeight = tf.switch_case(self.datasetNumPH, branchFuns)
+        #These variables ('batchInputs', 'batchTargets', 'batchWeight') are the output of the day-selector mechanism
+        #and are all that is needed moving forward to define the LSTM cost function.
+        self.batchInputs, self.batchTargets, self.batchWeight = tf.switch_case(self.datasetNumPH, branchFuns)
 
-    self.batchWeight.set_shape([self.args['batchSize'], self.args['timeSteps']])
-    self.batchInputs.set_shape([self.args['batchSize'], self.args['timeSteps'], nInputs])
-    self.batchTargets.set_shape([self.args['batchSize'], self.args['timeSteps'], nOutputs])
+        self.batchWeight.set_shape([self.args['batchSize'], self.args['timeSteps']])
+        self.batchInputs.set_shape([self.args['batchSize'], self.args['timeSteps'], nInputs])
+        self.batchTargets.set_shape([self.args['batchSize'], self.args['timeSteps'], nOutputs])
 
-    #--------------LSTM Graph--------------
-    #First, some simple Gaussian smoothing.     
-        # Apply Gaussian Smoothing if required
-    if self.args['smoothInputs'] == 1:
-        self.inputs = self.gaussSmooth(self.inputs, kernelSD=4/self.args['rnnBinSize'])
+        #--------------LSTM Graph--------------
+        #First, some simple Gaussian smoothing.     
+            # Apply Gaussian Smoothing if required
+        if self.args['smoothInputs'] == 1:
+            self.inputs = self.gaussSmooth(self.inputs, kernelSD=4/self.args['rnnBinSize'])
 
-    # Define the directionality for the RNN (uni/bidirectional)
-    biDir = 2 if self.args['directionality'] == 'bidirectional' else 1
+        # Define the directionality for the RNN (uni/bidirectional)
+        biDir = 2 if self.args['directionality'] == 'bidirectional' else 1
 
-    # Define the trainable initial RNN state
-    self.rnnStartState = tf.get_variable('LSTM_layer0/startState', [biDir, 1, self.args['nUnits']],
-                                            dtype=tf.float32, initializer=tf.zeros_initializer,
-                                            trainable=bool(self.args['trainableBackEnd']))
-    
-    # Tile the initial state across the batch size
-    initLSTMState = tf.tile(self.rnnStartState, [1, self.args['batchSize'], 1])
+        # Define the trainable initial RNN state
+        self.rnnStartState = tf.get_variable('LSTM_layer0/startState', [biDir, 1, self.args['nUnits']],
+                                                dtype=tf.float32, initializer=tf.zeros_initializer,
+                                                trainable=bool(self.args['trainableBackEnd']))
+        
+        # Tile the initial state across the batch size
+        initLSTMState = tf.tile(self.rnnStartState, [1, self.args['batchSize'], 1])
 
-    # Define the layers that vary depending on the day (dayToLayerMap)
-    self.dayToLayerMap = eval(self.args['dayToLayerMap'])  # Convert string to list/array
-    self.dayProbability = eval(self.args['dayProbability'])  # Convert string to list/array
-    self.nInpLayers = len(np.unique(self.dayToLayerMap))
+        # Define the layers that vary depending on the day (dayToLayerMap)
+        self.dayToLayerMap = eval(self.args['dayToLayerMap'])  # Convert string to list/array
+        self.dayProbability = eval(self.args['dayProbability'])  # Convert string to list/array
+        self.nInpLayers = len(np.unique(self.dayToLayerMap))
 
-    self.inputFactors_W_all = []
-    self.inputFactors_b_all = []
+        self.inputFactors_W_all = []
+        self.inputFactors_b_all = []
 
     # Define input layers for each day
-    for inpLayerIdx in range(self.nInpLayers):
-        self.inputFactors_W_all.append(tf.get_variable("inputFactors_W_" + str(inpLayerIdx),
-                                                        initializer=np.identity(self.args['nInputs']).astype(np.float32),
-                                                        trainable=bool(self.args['trainableInput'])))
+        for inpLayerIdx in range(self.nInpLayers):
+            self.inputFactors_W_all.append(tf.get_variable("inputFactors_W_" + str(inpLayerIdx),
+                                                            initializer=np.identity(self.args['nInputs']).astype(np.float32),
+                                                            trainable=bool(self.args['trainableInput'])))
 
-        self.inputFactors_b_all.append(tf.get_variable("inputFactors_b_" + str(inpLayerIdx),
-                                                        initializer=np.zeros([self.args['nInputs']]).astype(np.float32),
-                                                        trainable=bool(self.args['trainableInput'])))
-    #Define the selector mechanism that chooses which input layer to use depending on which day we have selected
-    #for the minibatch.
-    def makeFactorsFunc(self, dayIdx):
-        return lambda: (self.inputFactors_W_all[self.dayToLayerMap[dayIdx]],
-                    self.inputFactors_b_all[self.dayToLayerMap[dayIdx]])
-    branchFuns_inpLayers = []
-    for dayIdx in range(self.nDays):
-        branchFuns_inpLayers.append(makeFactorsFunc(dayIdx))
-    
-    #inp_W and inp_b are the chosen input layer variables
-    inp_W, inp_b = tf.switch_case(self.dayNumPH, branchFuns_inpLayers)
-    
-    #'inputFactors' are the transformed inputs which should now be in a common space across days.
-    self.inputFactors = tf.matmul(self.batchInputs, tf.tile(tf.expand_dims(inp_W,0), [self.args['batchSize'], 1, 1])) + inp_b
-    
-    #Now define the two GRU layers. Layer 1, which runs at a high frequency:
-    self.LSTMOutput, self.LSTMWeightVars = cudnnGraphSingleLayer(self.args['nUnits'], 
-                                                                initLSTMState, 
-                                                                self.inputFactors, 
-                                                                self.args['timeSteps'], 
-                                                                self.args['batchSize'], 
-                                                                nInputs, 
-                                                                self.args['directionality'])
-
-    #Layer 2, which runs at a slower frequency (defined by 'skipLen'):
-    nSkipInputs = self.args['nUnits']
-    skipLen = self.args['skipLen']
-    
-    with tf.variable_scope("layer2"):
-        self.LSTMOutput2, self.LSTMWeightVars2 = cudnnGraphSingleLayer(self.args['nUnits'], 
-                                                                        initLSTMState, 
-                                                                        self.LSTMOutput[:,0::skipLen,:], 
-                                                                        self.args['timeSteps']/skipLen, 
-                                                                        self.args['batchSize'], 
-                                                                        self.args['nUnits']*biDir,  
-                                                                        self.args['directionality'])
+            self.inputFactors_b_all.append(tf.get_variable("inputFactors_b_" + str(inpLayerIdx),
+                                                            initializer=np.zeros([self.args['nInputs']]).astype(np.float32),
+                                                            trainable=bool(self.args['trainableInput'])))
+        #Define the selector mechanism that chooses which input layer to use depending on which day we have selected
+        #for the minibatch.
+        def makeFactorsFunc(self, dayIdx):
+            return lambda: (self.inputFactors_W_all[self.dayToLayerMap[dayIdx]],
+                        self.inputFactors_b_all[self.dayToLayerMap[dayIdx]])
+        branchFuns_inpLayers = []
+        for dayIdx in range(self.nDays):
+            branchFuns_inpLayers.append(makeFactorsFunc(dayIdx))
         
-    #Finally, define the linear readout layer.
-    self.readout_W = tf.get_variable("readout_W",
-                        shape=[biDir*self.args['nUnits'], nOutputs],
-                        initializer=tf.random_normal_initializer(dtype=tf.float32, stddev=0.05),
-                        trainable=bool(self.args['trainableBackEnd']))
+        #inp_W and inp_b are the chosen input layer variables
+        inp_W, inp_b = tf.switch_case(self.dayNumPH, branchFuns_inpLayers)
+        
+        #'inputFactors' are the transformed inputs which should now be in a common space across days.
+        self.inputFactors = tf.matmul(self.batchInputs, tf.tile(tf.expand_dims(inp_W,0), [self.args['batchSize'], 1, 1])) + inp_b
+        
+        #Now define the two GRU layers. Layer 1, which runs at a high frequency:
+        self.LSTMOutput, self.LSTMWeightVars = cudnnGraphSingleLayer(self.args['nUnits'], 
+                                                                    initLSTMState, 
+                                                                    self.inputFactors, 
+                                                                    self.args['timeSteps'], 
+                                                                    self.args['batchSize'], 
+                                                                    nInputs, 
+                                                                    self.args['directionality'])
 
-    self.readout_b = tf.get_variable("readout_b",
-                                shape=[nOutputs],
-                                initializer=tf.zeros_initializer(dtype=tf.float32),
-                                trainable=bool(self.args['trainableBackEnd']))
+        #Layer 2, which runs at a slower frequency (defined by 'skipLen'):
+        nSkipInputs = self.args['nUnits']
+        skipLen = self.args['skipLen']
+        
+        with tf.variable_scope("layer2"):
+            self.LSTMOutput2, self.LSTMWeightVars2 = cudnnGraphSingleLayer(self.args['nUnits'], 
+                                                                            initLSTMState, 
+                                                                            self.LSTMOutput[:,0::skipLen,:], 
+                                                                            self.args['timeSteps']/skipLen, 
+                                                                            self.args['batchSize'], 
+                                                                            self.args['nUnits']*biDir,  
+                                                                            self.args['directionality'])
+            
+        #Finally, define the linear readout layer.
+        self.readout_W = tf.get_variable("readout_W",
+                            shape=[biDir*self.args['nUnits'], nOutputs],
+                            initializer=tf.random_normal_initializer(dtype=tf.float32, stddev=0.05),
+                            trainable=bool(self.args['trainableBackEnd']))
 
-    tiledReadoutWeights = tf.tile(tf.expand_dims(self.readout_W,0), [self.args['batchSize'], 1, 1])
-    self.logitOutput_downsample = tf.matmul(self.LSTMOutput2, tiledReadoutWeights) + self.readout_b
-    
-    #Up-sample the outputs to the original time-resolution (needed b/c layer 2 is slower). 
-    expIdx = []
-    for t in range(int(args['timeSteps']/skipLen)):
-        expIdx.append(np.zeros([skipLen])+t)
-    expIdx = np.concatenate(expIdx).astype(int)
-    self.logitOutput = tf.gather(self.logitOutput_downsample, expIdx, axis=1)
+        self.readout_b = tf.get_variable("readout_b",
+                                    shape=[nOutputs],
+                                    initializer=tf.zeros_initializer(dtype=tf.float32),
+                                    trainable=bool(self.args['trainableBackEnd']))
 
-    #--------------Loss function--------------
-    #here we accounting for the output delay
-    
-    # Gestione del delay nell'output
-    output_delay = self.args['outputDelay']
-    labels = self.targets[:, :-output_delay, :]
-    logits = self.logitOutput[:, output_delay:, :]
-    bw = self.batchWeight[:, :-output_delay]
+        tiledReadoutWeights = tf.tile(tf.expand_dims(self.readout_W,0), [self.args['batchSize'], 1, 1])
+        self.logitOutput_downsample = tf.matmul(self.LSTMOutput2, tiledReadoutWeights) + self.readout_b
+        
+        #Up-sample the outputs to the original time-resolution (needed b/c layer 2 is slower). 
+        expIdx = []
+        for t in range(int(args['timeSteps']/skipLen)):
+            expIdx.append(np.zeros([skipLen])+t)
+        expIdx = np.concatenate(expIdx).astype(int)
+        self.logitOutput = tf.gather(self.logitOutput_downsample, expIdx, axis=1)
 
-    # Segnale di transizione (ultima colonna)
-    transOut = logits[:, :, -1]
-    transLabel = labels[:, :, -1]
+        #--------------Loss function--------------
+        #here we accounting for the output delay
+        
+        # Gestione del delay nell'output
+        output_delay = self.args['outputDelay']
+        labels = self.targets[:, :-output_delay, :]
+        logits = self.logitOutput[:, output_delay:, :]
+        bw = self.batchWeight[:, :-output_delay]
 
-    # Ignora l'ultima colonna per la softmax cross-entropy
-    logits = logits[:, :, :-1]
-    labels = labels[:, :, :-1]
+        # Segnale di transizione (ultima colonna)
+        transOut = logits[:, :, -1]
+        transLabel = labels[:, :, -1]
 
-    # Calcolo della softmax cross-entropy
-    ceLoss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=labels, logits=logits)
-    self.totalErr = tf.reduce_mean(tf.reduce_sum(bw * ceLoss, axis=1) / self.args['timeSteps'])
+        # Ignora l'ultima colonna per la softmax cross-entropy
+        logits = logits[:, :, :-1]
+        labels = labels[:, :, :-1]
 
-    # Perdita per il segnale di transizione con errore quadratico medio
-    sqErrLoss = tf.square(tf.sigmoid(transOut) - transLabel)
-    self.totalErr += 5 * tf.reduce_mean(tf.reduce_sum(sqErrLoss, axis=1) / self.args['timeSteps'])
+        # Calcolo della softmax cross-entropy
+        ceLoss = tf.nn.softmax_cross_entropy_with_logits_v2(labels=labels, logits=logits)
+        self.totalErr = tf.reduce_mean(tf.reduce_sum(bw * ceLoss, axis=1) / self.args['timeSteps'])
 
-    # Regolarizzazione L2 sui pesi
-    weightVars = [self.readout_W]
-    self.l2cost = tf.zeros(1, dtype=tf.float32)
-    if self.args['l2scale'] > 0:
-        for w in weightVars:
-            self.l2cost += tf.reduce_sum(tf.square(w))
+        # Perdita per il segnale di transizione con errore quadratico medio
+        sqErrLoss = tf.square(tf.sigmoid(transOut) - transLabel)
+        self.totalErr += 5 * tf.reduce_mean(tf.reduce_sum(sqErrLoss, axis=1) / self.args['timeSteps'])
 
-    # Costo totale
-    self.totalCost = self.totalErr + self.l2cost * self.args['l2scale']
+        # Regolarizzazione L2 sui pesi
+        weightVars = [self.readout_W]
+        self.l2cost = tf.zeros(1, dtype=tf.float32)
+        if self.args['l2scale'] > 0:
+            for w in weightVars:
+                self.l2cost += tf.reduce_sum(tf.square(w))
+
+        # Costo totale
+        self.totalCost = self.totalErr + self.l2cost * self.args['l2scale']
 
 
-    # Raccolta delle variabili allenabili
-    tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
-    
-    # Opzione per allenare solo i layer di input
-    if not self.args['trainableBackEnd']:
-        tvars.remove(self.LSTMWeightVars[0])
-        tvars.remove(self.LSTMWeightVars2[0])
+        # Raccolta delle variabili allenabili
+        tvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)
+        
+        # Opzione per allenare solo i layer di input
+        if not self.args['trainableBackEnd']:
+            tvars.remove(self.LSTMWeightVars[0])
+            tvars.remove(self.LSTMWeightVars2[0])
 
-    # Clipping dei gradienti
-    grads = tf.gradients(self.totalCost, tvars)
-    grads, self.grad_global_norm = tf.clip_by_global_norm(grads, 10)
+        # Clipping dei gradienti
+        grads = tf.gradients(self.totalCost, tvars)
+        grads, self.grad_global_norm = tf.clip_by_global_norm(grads, 10)
 
-    # Ottimizzatore Adam
-    learnRate = tf.get_variable('learnRate', dtype=tf.float32, initializer=1.0, trainable=False)
-    opt = tf.train.AdamOptimizer(learnRate, beta1=0.9, beta2=0.999, epsilon=1e-01)
+        # Ottimizzatore Adam
+        learnRate = tf.get_variable('learnRate', dtype=tf.float32, initializer=1.0, trainable=False)
+        opt = tf.train.AdamOptimizer(learnRate, beta1=0.9, beta2=0.999, epsilon=1e-01)
 
-    # Placeholder per aggiornare il tasso di apprendimento
-    self.new_lr = tf.placeholder(tf.float32, shape=[], name="new_learning_rate")
-    self.lr_update = tf.assign(learnRate, self.new_lr)
+        # Placeholder per aggiornare il tasso di apprendimento
+        self.new_lr = tf.placeholder(tf.float32, shape=[], name="new_learning_rate")
+        self.lr_update = tf.assign(learnRate, self.new_lr)
 
-    # Controllo della finitezza dei gradienti
-    allIsFinite = [tf.reduce_all(tf.is_finite(g)) for g in grads if g is not None]
-    gradIsFinite = tf.reduce_all(tf.stack(allIsFinite))
-    self.train_op = tf.cond(gradIsFinite, 
-                            lambda: opt.apply_gradients(zip(grads, tvars), global_step=tf.train.get_or_create_global_step()), 
-                            lambda: tf.no_op())
+        # Controllo della finitezza dei gradienti
+        allIsFinite = [tf.reduce_all(tf.is_finite(g)) for g in grads if g is not None]
+        gradIsFinite = tf.reduce_all(tf.stack(allIsFinite))
+        self.train_op = tf.cond(gradIsFinite, 
+                                lambda: opt.apply_gradients(zip(grads, tvars), global_step=tf.train.get_or_create_global_step()), 
+                                lambda: tf.no_op())
 
-    #Initialize all variables in the model, potentially loading them if self.loadingInitParams==True
-    self._loadAndInitializeVariables()
- 
+        #Initialize all variables in the model, potentially loading them if self.loadingInitParams==True
+        self._loadAndInitializeVariables()
+
     def train(self):
         """
         The main training loop. Each iteration executes a single minibatch. The loop periodically saves the model
@@ -385,7 +385,7 @@ def combineSynthAndReal(synthIter, realIter):
 
             # Compute learning rate
             lr = (self.args['learnRateStart'] * (1 - i / float(self.args['nBatchesToTrain']))) + \
-                 (self.args['learnRateEnd'] * (i / float(self.args['nBatchesToTrain'])))
+                (self.args['learnRateEnd'] * (i / float(self.args['nBatchesToTrain'])))
 
             # Run training batch
             dayNum = np.argwhere(np.random.multinomial(1, self.dayProbability))[0][0]
@@ -405,16 +405,16 @@ def combineSynthAndReal(synthIter, realIter):
             # Perform validation and save outputs periodically
             if i % self.args['batchesPerVal'] == 0:
                 valSetIdx = int(i / self.args['batchesPerVal'])
-                batchValStats[valSetIdx, 0:4], outputSnapshot = self._validationDiagnostics(i, self.args['batchesPerVal'], lr, 
-                                                                                          totalSeconds, runResultsTrain, trainAcc)
-                
+                batchValStats[valSetIdx, 0:4], outputSnapshot = self._validationDiagnostics(i, self.args['batchesPerVal'], lr,
+                                                                                            totalSeconds, runResultsTrain, trainAcc)
+
                 # Save output snapshot for external plotting
                 scipy.io.savemat(self.args['outputDir'] + '/outputSnapshot', outputSnapshot)
 
             # Save performance statistics and model parameters periodically
             if i >= (self.startingBatchNum + self.args['batchesPerSave'] - 1) and i % self.args['batchesPerSave'] == 0:
                 scipy.io.savemat(self.args['outputDir'] + '/intermediateOutput', {'batchTrainStats': batchTrainStats,
-                                                                                   'batchValStats': batchValStats})
+                                                                                'batchValStats': batchValStats})
 
             # Save the model periodically
             if i % self.args['batchesPerModelSave'] == 0:
@@ -425,11 +425,12 @@ def combineSynthAndReal(synthIter, realIter):
 
         # Save final statistics and model
         scipy.io.savemat(self.args['outputDir'] + '/finalOutput', {'batchTrainStats': batchTrainStats,
-                                                                   'batchValStats': batchValStats})
+                                                                'batchValStats': batchValStats})
 
         print('SAVING FINAL MODEL')
         saver.save(self.sess, self.args['outputDir'] + '/model.ckpt', global_step=i, write_meta_graph=False)
-    
+   
+        
     def inference(self):
         """
         Esegue il modello LSTM su tutto il dataset una volta e ritorna i risultati.
@@ -704,49 +705,49 @@ def combineSynthAndReal(synthIter, realIter):
         iterator = newDataset.make_initializable_iterator()
         return iterator
                         
-    def extractSentenceSnippet(inputs, targets, errWeight, numBinsPerTrial, nSteps, directionality):
-        """
-        Extracts a random snippet of data from the full sentence to use for the mini-batch.
-        """          
-        randomStart = tf.random.uniform(
-                                    [],
-                                    minval=0,
-                                    maxval=tf.maximum(numBinsPerTrial[0]+(nSteps-100)-400, 1),
-                                    dtype=tf.dtypes.int32)
-        
-        inputsSnippet = inputs[randomStart:(randomStart+nSteps),:]
-        targetsSnippet = targets[randomStart:(randomStart+nSteps),:]
-        
-        charStarts = tf.where_v2(targetsSnippet[1:,-1] - targetsSnippet[0:-1,-1]>=0.1)        
-        
+def extractSentenceSnippet(inputs, targets, errWeight, numBinsPerTrial, nSteps, directionality):
+    """
+    Extracts a random snippet of data from the full sentence to use for the mini-batch.
+    """          
+    randomStart = tf.random.uniform(
+                                [],
+                                minval=0,
+                                maxval=tf.maximum(numBinsPerTrial[0] + (nSteps - 100) - 400, 1),
+                                dtype=tf.dtypes.int32)
+    
+    inputsSnippet = inputs[randomStart:(randomStart + nSteps), :]
+    targetsSnippet = targets[randomStart:(randomStart + nSteps), :]
+    
+    charStarts = tf.where_v2(targetsSnippet[1:, -1] - targetsSnippet[0:-1, -1] >= 0.1)        
+
     def noLetters():
-        ews =  tf.zeros(shape=[nSteps])
+        ews = tf.zeros(shape=[nSteps])
         return ews
-
+    
     def atLeastOneLetter():
-        firstChar = tf.cast(charStarts[0,0], dtype=tf.int32)
-        lastChar = tf.cast(charStarts[-1,0], dtype=tf.int32)
+        firstChar = tf.cast(charStarts[0, 0], dtype=tf.int32)
+        lastChar = tf.cast(charStarts[-1, 0], dtype=tf.int32)
         
-        if directionality=='unidirectional':
-            #if uni-directional, only need to blank out the first part because it's causal with a delay
-            ews =  tf.concat([tf.zeros(shape=[firstChar]), 
-                              errWeight[(randomStart+firstChar):(randomStart+nSteps)]], axis=0)
+        if directionality == 'unidirectional':
+            # if unidirectional, only blank out the first part because it's causal with a delay
+            ews = tf.concat([tf.zeros(shape=[firstChar]), 
+                             errWeight[(randomStart + firstChar):(randomStart + nSteps)]], axis=0)
         else:
-            #if bi-directional (acausal), we need to blank out the last incomplete character as well so that only fully complete
-            #characters are included
-            ews =  tf.concat([tf.zeros(shape=[firstChar]), 
-                              errWeight[(randomStart+firstChar):(randomStart+lastChar)],
-                              tf.zeros(shape=[nSteps-lastChar])], axis=0)
+            # if bi-directional (acausal), blank out the last incomplete character as well
+            # so that only fully complete characters are included
+            ews = tf.concat([tf.zeros(shape=[firstChar]), 
+                             errWeight[(randomStart + firstChar):(randomStart + lastChar)],
+                             tf.zeros(shape=[nSteps - lastChar])], axis=0)
             
-            return ews
-        
-        errWeightSnippet = tf.cond(tf.equal(tf.shape(charStarts)[0], 0), 
-                                noLetters, 
-                                atLeastOneLetter)
+        return ews  
+    
+    errWeightSnippet = tf.cond(tf.equal(tf.shape(charStarts)[0], 0), 
+                               noLetters, 
+                               atLeastOneLetter)
 
-        return inputsSnippet, targetsSnippet, errWeightSnippet, numBinsPerTrial
-            
-    def addMeanNoise(inputs, targets, errWeight, numBinsPerTrial, constantOffsetSD, randomWalkSD, nSteps):
+    return inputsSnippet, targetsSnippet, errWeightSnippet, numBinsPerTrial
+        
+def addMeanNoise(inputs, targets, errWeight, numBinsPerTrial, constantOffsetSD, randomWalkSD, nSteps):
         """
         Applies mean drift noise to each time step of the data in the form of constant offsets (sd=sdConstant)
         and random walk noise (sd=sdRandomWalk)
@@ -756,7 +757,7 @@ def combineSynthAndReal(synthIter, realIter):
         
         return inputs+meanDriftNoise, targets, errWeight, numBinsPerTrial
 
-    def addWhiteNoise(inputs, targets, errWeight, numBinsPerTrial, whiteNoiseSD, nSteps):
+def addWhiteNoise(inputs, targets, errWeight, numBinsPerTrial, whiteNoiseSD, nSteps):
         """
         Applies white noise to each time step of the data (sd=whiteNoiseSD)
         """
@@ -764,208 +765,210 @@ def combineSynthAndReal(synthIter, realIter):
                                 
         return inputs+whiteNoise, targets, errWeight, numBinsPerTrial
 
-    def parseDataset(singleExample, nSteps, nInputs, nClasses, whiteNoiseSD=0.0, constantOffsetSD=0.0, randomWalkSD=0.0):
-        """
-        Parsing function for the .tfrecord file synthetic data. Returns a synthetic snippet with added noise for training.
-        """
-        features = {"inputs": tf.FixedLenFeature((nSteps, nInputs), tf.float32),
-                    "labels": tf.FixedLenFeature((nSteps, nClasses), tf.float32),
-                    "errWeights": tf.FixedLenFeature((nSteps), tf.float32),}
-        parsedFeatures = tf.parse_single_example(singleExample, features)
-            
-        noise = tf.random_normal([nSteps, nInputs], mean=0.0, stddev=whiteNoiseSD)
-        
-        if constantOffsetSD>0 or randomWalkSD>0:
-            trainNoise_mn = tf.random_normal([1, nInputs], mean=0, stddev=constantOffsetSD)
-            trainNoise_mn += tf.cumsum(tf.random_normal([nSteps, nInputs], mean=0, stddev=randomWalkSD), axis=1)
-            noise += trainNoise_mn
-            
-        return parsedFeatures["inputs"]+noise, parsedFeatures["labels"], parsedFeatures["errWeights"]
+def parseDataset(singleExample, nSteps, nInputs, nClasses, whiteNoiseSD=0.0, constantOffsetSD=0.0, randomWalkSD=0.0):
+    """
+    Parsing function for the .tfrecord file synthetic data. Returns a synthetic snippet with added noise for training.
+    """
+    features = {
+        "inputs": tf.FixedLenFeature((nSteps, nInputs), tf.float32),
+        "labels": tf.FixedLenFeature((nSteps, nClasses), tf.float32),
+        "errWeights": tf.FixedLenFeature((nSteps), tf.float32),
+    }
+    parsedFeatures = tf.parse_single_example(singleExample, features)
 
-    def cudnnGraphSingleLayer(nUnits, initLSTMState, batchInputs, nSteps, nBatch, nInputs, direction):
-        """
-        Construct a single GRU layer using tensorflow cudnn calls for speed and define the shape before runtime. 
-        Also return the weights so we can do L2 regularization.
-        """
-        nLayers = 1
-        LSTM_cudnn = tf.contrib.cudnn_LSTM.CudnnGRU(nLayers, 
-                                                nUnits, 
-                                                dtype=tf.float32, 
-                                                bias_initializer=tf.constant_initializer(0.0), 
-                                                direction=direction)
-        
-        inputSize = [nSteps, nBatch, nInputs]
-        LSTM_cudnn.build(inputSize)
-        
-        #taking care to transpose the inputs and outputs for compatability with the rest of the code which is batch-first
-        cudnnInput = tf.transpose(batchInputs,[1,0,2])
-        y_cudnn, state_cudnn = LSTM_cudnn(cudnnInput, initial_state=(initLSTMState,))
-        y_cudnn = tf.transpose(y_cudnn,[1,0,2])
-        
-        return y_cudnn, [LSTM_cudnn.weights[0]]
+    noise = tf.random_normal([nSteps, nInputs], mean=0.0, stddev=whiteNoiseSD)
+
+    if constantOffsetSD > 0 or randomWalkSD > 0:
+        trainNoise_mn = tf.random_normal([1, nInputs], mean=0, stddev=constantOffsetSD)
+        trainNoise_mn += tf.cumsum(tf.random_normal([nSteps, nInputs], mean=0, stddev=randomWalkSD), axis=1)
+        noise += trainNoise_mn
+
+    return parsedFeatures["inputs"] + noise, parsedFeatures["labels"], parsedFeatures["errWeights"]
+
+def cudnnGraphSingleLayer(nUnits, initRNNState, batchInputs, nSteps, nBatch, nInputs, direction):
+    """
+    Construct a single GRU layer using tensorflow cudnn calls for speed and define the shape before runtime. 
+    Also return the weights so we can do L2 regularization.
+    """
+    nLayers = 1
+    LSTM_cudnn = tf.contrib.cudnn_LSTM.CudnnGRU(nLayers, 
+                                              nUnits, 
+                                              dtype=tf.float32, 
+                                              bias_initializer=tf.constant_initializer(0.0), 
+                                              direction=direction)
+    
+    inputSize = [nSteps, nBatch, nInputs]
+    LSTM_cudnn.build(inputSize)
+    
+    #taking care to transpose the inputs and outputs for compatability with the rest of the code which is batch-first
+    cudnnInput = tf.transpose(batchInputs,[1,0,2])
+    y_cudnn, state_cudnn = LSTM_cudnn(cudnnInput, initial_state=(initRNNState,))
+    y_cudnn = tf.transpose(y_cudnn,[1,0,2])
+    
+    return y_cudnn, [LSTM_cudnn.weights[0]]
                         
-    def gaussSmooth(inputs, kernelSD):
-        """
-        Applies a 1D gaussian smoothing operation with tensorflow to smooth the data along the time axis.
+def gaussSmooth(inputs, kernelSD):
+    """
+    Applies a 1D gaussian smoothing operation with tensorflow to smooth the data along the time axis.
         
-        Args:
-            inputs (tensor : B x T x N): A 3d tensor with batch size B, time steps T, and number of features N
-            kernelSD (float): standard deviation of the Gaussian smoothing kernel
+    Args:
+        inputs (tensor : B x T x N): A 3d tensor with batch size B, time steps T, and number of features N
+        kernelSD (float): standard deviation of the Gaussian smoothing kernel
             
-        Returns:
-            smoothedData (tensor : B x T x N): A smoothed 3d tensor with batch size B, time steps T, and number of features N
-        """
+    Returns:
+    smoothedData (tensor : B x T x N): A smoothed 3d tensor with batch size B, time steps T, and number of features N
+    """
                                     
-        #get gaussian smoothing kernel
-        inp = np.zeros([100])
-        inp[50] = 1
-        gaussKernel = gaussian_filter1d(inp, kernelSD)
+    #get gaussian smoothing kernel
+    inp = np.zeros([100])
+    inp[50] = 1
+    gaussKernel = gaussian_filter1d(inp, kernelSD)
 
-        validIdx = np.argwhere(gaussKernel>0.01)
-        gaussKernel = gaussKernel[validIdx]
-        gaussKernel = np.squeeze(gaussKernel/np.sum(gaussKernel))
+    validIdx = np.argwhere(gaussKernel>0.01)
+    gaussKernel = gaussKernel[validIdx]
+    gaussKernel = np.squeeze(gaussKernel/np.sum(gaussKernel))
         
         #apply the convolution separately for each feature
-        convOut = []
-        for x in range(inputs.get_shape()[2]):
-            convOut.append(tf.nn.conv1d(inputs[:,:,x,tf.newaxis], gaussKernel[:,np.newaxis,np.newaxis].astype(np.float32), 1, 'SAME'))
+    convOut = []
+    for x in range(inputs.get_shape()[2]):
+        convOut.append(tf.nn.conv1d(inputs[:,:,x,tf.newaxis], gaussKernel[:,np.newaxis,np.newaxis].astype(np.float32), 1, 'SAME'))
             
-        #gather the separate convolutions together into a 3d tensor again
-        smoothedData = tf.concat(convOut, axis=2)
+    #gather the separate convolutions together into a 3d tensor again
+    smoothedData = tf.concat(convOut, axis=2)
         
-        return smoothedData
+    return smoothedData
 
-    def computeFrameAccuracy(LSTMOutput, targets, errWeight, outputDelay):
-        """
-        Computes a frame-by-frame accuracy percentage given the LSTMOutput and the targets, while ignoring
-        frames that are masked-out by errWeight and accounting for the LSTM's outputDelay. 
-        """
-        #Select all columns but the last one (which is the character start signal) and align LSTMOutput to targets
-        #while taking into account the output delay. 
-        bestClass = np.argmax(LSTMOutput[:,outputDelay:,0:-1], axis=2)
-        indicatedClass = np.argmax(targets[:,0:-outputDelay,0:-1], axis=2)
-        bw = errWeight[:,0:-outputDelay]
+def computeFrameAccuracy(LSTMOutput, targets, errWeight, outputDelay):
+    """
+    Computes a frame-by-frame accuracy percentage given the LSTMOutput and the targets, while ignoring
+    frames that are masked-out by errWeight and accounting for the LSTM's outputDelay. 
+    """
+    #Select all columns but the last one (which is the character start signal) and align LSTMOutput to targets
+    #while taking into account the output delay. 
+    bestClass = np.argmax(LSTMOutput[:,outputDelay:,0:-1], axis=2)
+    indicatedClass = np.argmax(targets[:,0:-outputDelay,0:-1], axis=2)
+    bw = errWeight[:,0:-outputDelay]
 
-        #Mean accuracy is computed by summing number of accurate frames and dividing by total number of valid frames (where bw == 1)
-        acc = np.sum(bw*np.equal(np.squeeze(bestClass), np.squeeze(indicatedClass)))/np.sum(bw)
+    #Mean accuracy is computed by summing number of accurate frames and dividing by total number of valid frames (where bw == 1)
+    acc = np.sum(bw*np.equal(np.squeeze(bestClass), np.squeeze(indicatedClass)))/np.sum(bw)
         
-        return acc
+    return acc
 
-    def getDefaultLSTMArgs():
-        """
-        Makes a default 'args' dictionary with all LSTM hyperparameters populated with default values.
-        """
-        args = {}
+def getDefaultRNNArgs():
+    """
+    Makes a default 'args' dictionary with all RNN hyperparameters populated with default values.
+    """
+    args = {}
 
-        #These arguments define each dataset that will be used for training.
-        rootDir = '/home/fwillett/handwritingDatasetsForRelease/'
-        dataDirs = ['t5.2019.05.08']
-        cvPart = 'HeldOutBlocks'
+    #These arguments define each dataset that will be used for training.
+    rootDir = '/Users/bishoyzakhary/handwritingBCIData/handwritingDatasetsForRelease'
+    dataDirs = ['t5.2019.05.08']
+    cvPart = 'HeldOutBlocks'
 
-        for x in range(len(dataDirs)):
-            args['timeSeriesFile_'+str(x)] = rootDir+'Step2_HMMLabels/'+cvPart+'/'+dataDirs[x]+'_timeSeriesLabels.mat'
-            args['syntheticDatasetDir_'+str(x)] = rootDir+'Step3_SyntheticSentences/'+cvPart+'/'+dataDirs[x]+'_syntheticSentences/'
-            args['cvPartitionFile_'+str(x)] = rootDir+'trainTestPartitions_'+cvPart+'.mat'
-            args['sessionName_'+str(x)] = dataDirs[x]
+    for x in range(len(dataDirs)):
+        args['timeSeriesFile_'+str(x)] = rootDir+'Step2_HMMLabels/'+cvPart+'/'+dataDirs[x]+'_timeSeriesLabels.mat'
+        args['syntheticDatasetDir_'+str(x)] = rootDir+'Step3_SyntheticSentences/'+cvPart+'/'+dataDirs[x]+'_syntheticSentences/'
+        args['cvPartitionFile_'+str(x)] = rootDir+'trainTestPartitions_'+cvPart+'.mat'
+        args['sessionName_'+str(x)] = dataDirs[x]
 
-        #Specify which GPU to use (on multi-gpu machines, this prevents tensorflow from taking over all GPUs)
-        args['gpuNumber'] = '0'
-        
-        #mode can either be 'train' or 'inference'
-        args['mode'] = 'train'
-        
-        #where to save the LSTM files
-        args['outputDir'] = rootDir+'Step4_LSTMTraining/'+cvPart
-        
-        #We can load the variables from a previous run, either to resume training (if loadDir==outputDir) 
-        #or otherwise to complete an entirely new training run. 'loadCheckpointIdx' specifies which checkpoint to load (-1 = latest)
-        args['loadDir'] = 'None'
-        args['loadCheckpointIdx'] = -1
-        
-        #number of units in each GRU layer
-        args['nUnits'] = 512
-        
-        #Specifies how many 10 ms time steps to combine a single bin for LSTM processing                              
-        args['LSTMBinSize'] = 2
-        
-        #Applies Gaussian smoothing if equal to 1                             
-        args['smoothInputs'] = 1
-        
-        #For the top GRU layer, how many bins to skip for each update (the top layer runs at a slower frequency)                             
-        args['skipLen'] = 5
-        
-        #How many bins to delay the output. Some delay is needed in order to give the LSTM enough time to see the entire character
-        #before deciding on its identity. Default is 1 second (50 bins).
-        args['outputDelay'] = 50 
-        
-        #Can be 'unidrectional' (causal) or 'bidirectional' (acausal)                              
-        args['directionality'] = 'unidirectional'
-
-        #standard deivation of the constant-offset firing rate drift noise                             
-        args['constantOffsetSD'] = 0.6
-        
-        #standard deviation of the random walk firing rate drift noise                             
-        args['randomWalkSD'] = 0.02 
+    #Specify which GPU to use (on multi-gpu machines, this prevents tensorflow from taking over all GPUs)
+    args['gpuNumber'] = '0'
     
-        #standard deivation of the white noise added to the inputs during training                            
-        args['whiteNoiseSD'] = 1.2
-        
-        #l2 regularization cost                             
-        args['l2scale'] = 1e-5 
-                                    
-        args['learnRateStart'] = 0.01
-        args['learnRateEnd'] = 0.0
-        
-        #can optionally specify for only the input layers to train or only the back end                             
-        args['trainableInput'] = 1
-        args['trainableBackEnd'] = 1
+    #mode can either be 'train' or 'inference'
+    args['mode'] = 'train'
+    
+    #where to save the RNN files
+    args['outputDir'] = rootDir+'Step4_RNNTraining/'+cvPart
+    
+    #We can load the variables from a previous run, either to resume training (if loadDir==outputDir) 
+    #or otherwise to complete an entirely new training run. 'loadCheckpointIdx' specifies which checkpoint to load (-1 = latest)
+    args['loadDir'] = 'None'
+    args['loadCheckpointIdx'] = -1
+    
+    #number of units in each GRU layer
+    args['nUnits'] = 512
+    
+    #Specifies how many 10 ms time steps to combine a single bin for RNN processing                              
+    args['rnnBinSize'] = 2
+    
+    #Applies Gaussian smoothing if equal to 1                             
+    args['smoothInputs'] = 1
+    
+    #For the top GRU layer, how many bins to skip for each update (the top layer runs at a slower frequency)                             
+    args['skipLen'] = 5
+    
+    #How many bins to delay the output. Some delay is needed in order to give the RNN enough time to see the entire character
+    #before deciding on its identity. Default is 1 second (50 bins).
+    args['outputDelay'] = 50 
+    
+    #Can be 'unidrectional' (causal) or 'bidirectional' (acausal)                              
+    args['directionality'] = 'unidirectional'
 
-        #this seed is set for numpy and tensorflow when the class is initialized                             
-        args['seed'] = datetime.now().microsecond
+    #standard deivation of the constant-offset firing rate drift noise                             
+    args['constantOffsetSD'] = 0.6
+    
+    #standard deviation of the random walk firing rate drift noise                             
+    args['randomWalkSD'] = 0.02 
+   
+    #standard deivation of the white noise added to the inputs during training                            
+    args['whiteNoiseSD'] = 1.2
+    
+    #l2 regularization cost                             
+    args['l2scale'] = 1e-5 
+                                
+    args['learnRateStart'] = 0.01
+    args['learnRateEnd'] = 0.0
+    
+    #can optionally specify for only the input layers to train or only the back end                             
+    args['trainableInput'] = 1
+    args['trainableBackEnd'] = 1
 
-        #number of checkpoints to keep saved during training                             
-        args['nCheckToKeep'] = 1
-        
-        #how often to save performance statistics                              
-        args['batchesPerSave'] = 200
-                                    
-        #how often to run a validation diagnostic batch                              
-        args['batchesPerVal'] = 50
-                                    
-        #how often to save the model                             
-        args['batchesPerModelSave'] = 5000
-                                    
-        #how many minibatches to use total                             
-        args['nBatchesToTrain'] = 100000 
+    #this seed is set for numpy and tensorflow when the class is initialized                             
+    args['seed'] = datetime.now().microsecond
 
-        #number of time steps to use in the minibatch (1200 = 24 seconds)                             
-        args['timeSteps'] = 1200 
-                                    
-        #number of sentence snippets to include in the minibatch                             
-        args['batchSize'] = 64 
-                                    
-        #how much of each minibatch is synthetic data                              
-        args['synthBatchSize'] = 24 
+    #number of checkpoints to keep saved during training                             
+    args['nCheckToKeep'] = 1
+    
+    #how often to save performance statistics                              
+    args['batchesPerSave'] = 200
+                                 
+    #how often to run a validation diagnostic batch                              
+    args['batchesPerVal'] = 50
+                                 
+    #how often to save the model                             
+    args['batchesPerModelSave'] = 5000
+                                 
+    #how many minibatches to use total                             
+    args['nBatchesToTrain'] = 100000 
 
-        #can be used to scale up all input features, sometimes useful when transferring to new days without retraining 
-        args['inputScale'] = 1.0
-                                    
-        #parameters to specify where to save the outputs and which layer to use during inference                             
-        args['inferenceOutputFileName'] = 'None'
-        args['inferenceInputLayer'] = 0
+    #number of time steps to use in the minibatch (1200 = 24 seconds)                             
+    args['timeSteps'] = 1200 
+                                 
+    #number of sentence snippets to include in the minibatch                             
+    args['batchSize'] = 64 
+                                 
+    #how much of each minibatch is synthetic data                              
+    args['synthBatchSize'] = 24 
 
-        #defines the mapping between each day and which input layer to use for that day                             
-        args['dayToLayerMap'] = '[0]'
-                                    
-        #for each day, the probability that a minibatch will pull from that day. Can be used to weight some days more than others  
-        args['dayProbability'] = '[1.0]'
+    #can be used to scale up all input features, sometimes useful when transferring to new days without retraining 
+    args['inputScale'] = 1.0
+                                 
+    #parameters to specify where to save the outputs and which layer to use during inference                             
+    args['inferenceOutputFileName'] = 'None'
+    args['inferenceInputLayer'] = 0
 
-        return args
+    #defines the mapping between each day and which input layer to use for that day                             
+    args['dayToLayerMap'] = '[0]'
+                                 
+    #for each day, the probability that a minibatch will pull from that day. Can be used to weight some days more than others  
+    args['dayProbability'] = '[1.0]'
+
+    return args
         
     #Here we provide support for running from the command line.
     #The only command line argument is the name of an args file.
     #Launching from the command line is more reliable than launching from within a jupyter notebook, which sometimes hangs.
-    if __name__ == "__main__":
+if __name__ == "__main__":
         parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         parser.add_argument('--argsFile', metavar='argsFile', 
                             type=str, default='args.p')
